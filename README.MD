@@ -1,6 +1,6 @@
 # kernel_monitor
 
-+ 关于本框架的详细说明请见 [](TODO)
++ 关于本框架的详细说明请见 [https://bbs.kanxue.com/thread-286641.htm](https://bbs.kanxue.com/thread-286641.htm)
 
 ### 使用流程
 
