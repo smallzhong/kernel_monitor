@@ -26,9 +26,3 @@ namespace smallzhong {
 		std::optional<KernelModuleInfo> get_sys_module_info(std::string module_name);
 	}
 }
-
-
-
-
-#define KdPrintEx(_x_) DbgPrintEx _x_ 
-#define kdprintf(_x_) DbgPrintEx _x_ 
