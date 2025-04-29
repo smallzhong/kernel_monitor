@@ -39,6 +39,8 @@ VOID my_sleep(ULONG n)
 
 VOID DRIVERUNLOAD(_In_ struct _DRIVER_OBJECT* DriverObject)
 {
+	UNREFERENCED_PARAMETER(DriverObject);
+
 	PsRemoveLoadImageNotifyRoutine(ImageLoadCallback);
 	my_sleep(1000);
 	LOG_INFO("unload\r\n\r\n\r\n\r\n");
@@ -47,6 +49,8 @@ VOID DRIVERUNLOAD(_In_ struct _DRIVER_OBJECT* DriverObject)
 
 EXTERN_C NTSTATUS DriverMain(const PDRIVER_OBJECT DriverObject, const PUNICODE_STRING Registry)
 {
+	UNREFERENCED_PARAMETER(Registry);
+
 	LOG_INFO("entry\r\n");
 
 	NTSTATUS status = STATUS_SUCCESS;

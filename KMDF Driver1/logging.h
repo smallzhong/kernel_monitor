@@ -17,7 +17,7 @@
 #define LOG_LEVEL_DEBUG   5
 #define LOG_LEVEL_TRACE   6
 
-#define CURRENT_LOG_LEVEL LOG_LEVEL_INFO
+#define CURRENT_LOG_LEVEL LOG_LEVEL_WARNING
 
 #if CURRENT_LOG_LEVEL >= LOG_LEVEL_FATAL
 #define LOG_FATAL(fmt, ...) do {DbgPrintEx(77, 0, "[smallzhong][%s():%u] " fmt , __FUNCTION__, __LINE__, ## __VA_ARGS__); DbgBreakPoint();} while (0)
