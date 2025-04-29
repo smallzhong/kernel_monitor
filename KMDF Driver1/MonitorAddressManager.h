@@ -140,7 +140,7 @@ namespace smallzhong
 
 		// 过滤返回地址，检查是否在监控范围内
 		// 返回值：如果在监控范围内，返回索引+1；否则返回0
-		ULONG64 FilterRetAddr(ULONG64 ret_addr, BOOLEAN acquireLock = TRUE) {
+		ULONG64 FilterRetAddr(ULONG64 ret_addr, BOOLEAN acquireLock = FALSE) {
 			if (!IsInitialized()) {
 				return 0;
 			}
