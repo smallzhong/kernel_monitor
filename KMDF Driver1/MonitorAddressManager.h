@@ -23,7 +23,7 @@ namespace smallzhong
 		KSPIN_LOCK m_lock;
 
 		// 自定义内存池标签
-		static constexpr ULONG POOL_TAG = 'SMZH'; // smallzhong::CompileTimeHash("smallzhong");
+		static constexpr ULONG POOL_TAG = 'SMZ1'; // smallzhong::CompileTimeHash("smallzhong");
 
 		// 私有构造函数 - 单例模式
 		MonitorAddressManager(ULONG64 initialCapacity = 1000)
