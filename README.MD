@@ -3,7 +3,7 @@
 + 关于本框架的详细说明请见 [https://bbs.kanxue.com/thread-286641.htm](https://bbs.kanxue.com/thread-286641.htm)
 + 本项目使用了 [https://github.com/smallzhong/kernelhook](https://github.com/smallzhong/kernelhook) 这个内核 inlinehook 框架。
 
-### 使用流程
+## 使用流程
 
 + 使用nuget导入米松哥封装的 [Musa.Runtime](https://github.com/MiroKaku/Musa.runtime)  ，开始愉快地在内核编写C++代码。
 
@@ -37,3 +37,7 @@
 + 在 DriverMain 中特定 Hook 自己感兴趣的函数。
 
 + 加载驱动，查看日志。
+
+## TODO
+
+- [ ] 把日志模块封装一个消息队列，用另外一个线程异步地写日志。这样可以引入把日志写到文件的机制，在本机调试蓝屏了之后还能读取本地的日志查看蓝屏原因。
