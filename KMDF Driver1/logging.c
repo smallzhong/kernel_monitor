@@ -1,3 +1,3 @@
 #include "logging.h"
 
-ULONG g_LogLevel = LOG_LEVEL_WARNING;
+ULONG g_LogLevel = LOG_LEVEL_INFO;
