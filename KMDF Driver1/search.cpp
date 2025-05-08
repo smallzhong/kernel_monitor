@@ -1,5 +1,6 @@
 #include "search.h"
 #include "logging.h"
+#include "hook.h"
 
 namespace smallzhong {
 	namespace search
@@ -36,7 +37,7 @@ namespace smallzhong {
 				ULONG t_len = required_size + sizeof(RTL_PROCESS_MODULES);
 				std::unique_ptr<BYTE[]> buffer(new BYTE[t_len]);
 				PRTL_PROCESS_MODULES module_information = reinterpret_cast<PRTL_PROCESS_MODULES>(buffer.get());
-				RtlZeroMemory(module_information, t_len);
+				My_RtlZeroMemory(module_information, t_len);
 				status = ZwQuerySystemInformation(SystemModuleInformation, module_information, t_len, &required_size);
 				if (!NT_SUCCESS(status))
 				{

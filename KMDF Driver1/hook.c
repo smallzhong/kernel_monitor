@@ -1,12 +1,108 @@
 #include "hook.h"
 #include "stdio.h"
 
+static phook_record g_hook_record_head = NULL;
+static ULONG64 g_record_ct = 0;
+static ERESOURCE* g_hook_resource = NULL;
+static PDRIVER_OBJECT g_pdriver_object = NULL;
+// 全局计数器和同步事件
+static LONG g_workitem_count = 0; // 挂起工作项计数
+
+VOID DelayFreeMemoryWorkItem(_In_ PVOID IoObject, _In_opt_ PVOID Context);
+VOID EnsureResourceDestroyed();
+
+// 自定义内存移动函数
+void* My_RtlMoveMemory(void* dest, const void* src, size_t _Size)
+{
+	if (!MmIsAddressValid(dest) || !MmIsAddressValid(src))
+	{
+		LOG_FATAL("address not valid!\r\n");
+		return NULL;
+	}
+
+	PUCHAR d = (PUCHAR)dest;
+	PUCHAR s = (PUCHAR)src; // const
+
+	// 检查是否需要反向拷贝（内存区间重叠且目标地址在源地址之后）
+	if (d > s && d < s + _Size)
+	{
+		// 从后向前拷贝
+		d += _Size;
+		s += _Size;
+		while (_Size--)
+		{
+			*(--d) = *(--s);
+		}
+	}
+	else
+	{
+		// 从前向后拷贝（默认情况）
+		while (_Size--)
+		{
+			*(d++) = *(s++);
+		}
+	}
+
+	return dest;
+}
+
+NTSTATUS kernel_hook_init(PDRIVER_OBJECT pdriver_object)
+{
+	if (g_pdriver_object)
+	{
+		LOG_ERROR("kernel_hook_init might be called multiple times!\r\n");
+		return STATUS_INTERNAL_ERROR;
+	}
+
+	g_pdriver_object = pdriver_object;
+	// 初始化事件和计数器
+	g_workitem_count = 0;
+
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS kernel_hook_unload()
+{
+	// 手动删除所有hook
+	for (ULONG i = 0; i < g_record_ct; i++)
+	{
+		reset_hook(i);
+	}
+
+	// 等待所有工作项完成
+	LARGE_INTEGER timeoutInterval;
+	timeoutInterval.QuadPart = -10 * 1000 * 1000 * 5; // 5 秒超时 (单位为 100ns)
+	while (InterlockedCompareExchange(&g_workitem_count, 0, 0) != 0) {
+		int n = 500; // 500 ms
+		LARGE_INTEGER timeout;
+		timeout.QuadPart = -10 * 1000;
+		timeout.QuadPart *= n;
+		KeDelayExecutionThread(KernelMode, FALSE, &timeout);
+	}
+
+	LOG_INFO("All work items completed, safe to unload driver\r\n");
+
+	// 清理其他资源（ g_hook_record_head 和 g_hook_resource）
+	EnsureResourceDestroyed();
+
+	return STATUS_SUCCESS;
+}
+
+
+
+BOOLEAN kernel_hook_initialized()
+{
+	if (!g_pdriver_object)
+		return FALSE;
+	return TRUE;
+}
+
 ULONG64 allocateMemory(ULONG64 size)
 {
 	// 可以修改内存分配方式使其更隐蔽
-	PVOID memory = ExAllocatePoolWithTag(NonPagedPool, size, SMALLZHONG_POOLTAG);
+	PVOID memory = ExAllocatePoolWithTag(NonPagedPool, size, SMALLZHONG_NORMAL_POOLTAG);
 	if (memory) {
-		RtlZeroMemory(memory, size); // 初始化内存为零
+		My_RtlZeroMemory(memory, size); // 初始化内存为零
 	}
 	else
 	{
@@ -15,16 +111,49 @@ ULONG64 allocateMemory(ULONG64 size)
 	return (ULONG64)memory;
 }
 
-VOID freeMemory(ULONG64 addr)
+VOID freeMemory(PVOID addr)
 {
-	if (addr)
+	if (!kernel_hook_initialized())
 	{
-		ExFreePoolWithTag((PVOID)addr, SMALLZHONG_POOLTAG);
+		LOG_FATAL("kernel hook not initialized.\r\n");
 	}
-	else
-	{
-		LOG_FATAL("you want to free a NULL pointer ? \r\n");
+
+	if (!addr) {
+		LOG_FATAL("Attempting to free a NULL pointer\n");
+		return;
 	}
+
+	// 分配用于存储释放上下文的结构
+	PDELAY_FREE_CONTEXT delayContext = (PDELAY_FREE_CONTEXT)ExAllocatePoolWithTag(NonPagedPool, sizeof(DELAY_FREE_CONTEXT), SMALLZHONG_WORKITEM_POOLTAG);
+	if (!delayContext) {
+		LOG_FATAL("Failed to allocate delay context memory\n");
+		return;
+	}
+
+	// 创建工作项
+	PIO_WORKITEM workItem = IoAllocateWorkItem(g_pdriver_object); // 需要 DriverObject 来申请 IO_WORKITEM
+	if (!workItem) {
+		LOG_FATAL("Failed to allocate IO_WORKITEM\n");
+		ExFreePoolWithTag(delayContext, SMALLZHONG_WORKITEM_POOLTAG);
+		return;
+	}
+
+	// 增加引用计数
+	InterlockedIncrement(&g_workitem_count);
+
+	// 填充上下文结构
+	delayContext->MemoryToFree = addr;
+	delayContext->PoolTag = SMALLZHONG_NORMAL_POOLTAG; // 以后可以弄成传参进来的，尽量让不同的内存有不同的tag
+
+	// 将工作项排队到系统线程
+	IoQueueWorkItem(
+		workItem,                    // 工作项
+		DelayFreeMemoryWorkItem,     // 回调函数
+		DelayedWorkQueue,            // 低优先级队列
+		delayContext                 // 上下文
+	);
+
+	// 注意：工作项完成后工作项本身会自动释放
 }
 
 NTSTATUS makeWriteableMapping(void* const addr, unsigned int size, PMDL* my_mdl, PVOID* my_addr)
@@ -111,7 +240,7 @@ BOOLEAN writeToKernel(PVOID dest, PVOID src, ULONG64 size)
 		return FALSE;
 	}
 
-	RtlMoveMemory(my_addr, src, size);
+	My_RtlMoveMemory(my_addr, src, size);
 
 	freeMapping(my_mdl, my_addr);
 	return TRUE;
@@ -127,6 +256,8 @@ typedef struct _SMALLZHONG_WRITE_DPC_CONTEXT {
 
 VOID handler_writeToKernelWithDPC(_In_ struct _KDPC* Dpc, _In_opt_ PVOID DeferredContext, _In_opt_ PVOID SystemArgument1, _In_opt_ PVOID SystemArgument2)
 {
+	UNREFERENCED_PARAMETER(Dpc);
+
 	PSMALLZHONG_WRITE_DPC_CONTEXT p_context = (PSMALLZHONG_WRITE_DPC_CONTEXT)DeferredContext;
 	if (!p_context)
 	{
@@ -142,7 +273,7 @@ VOID handler_writeToKernelWithDPC(_In_ struct _KDPC* Dpc, _In_opt_ PVOID Deferre
 	KeSignalCallDpcSynchronize(SystemArgument2);
 	if (PendingProcessorId == KeGetCurrentProcessorNumber())
 	{
-		RtlMoveMemory(dest, src, size);
+		My_RtlMoveMemory(dest, src, size);
 	}
 
 	KeSignalCallDpcDone(SystemArgument1);
@@ -152,6 +283,8 @@ VOID handler_writeToKernelWithDPC(_In_ struct _KDPC* Dpc, _In_opt_ PVOID Deferre
 
 BOOLEAN writeToKernelWithDPC(PVOID dest, PVOID src, ULONG64 size)
 {
+	//return writeToKernel(dest, src, size);
+
 	LOG_TRACE("writeToKernelWithDPC %llx %llx %llx\r\n", dest, src, size);
 
 	if (!dest || !src)
@@ -188,10 +321,13 @@ BOOLEAN writeToKernelWithDPC(PVOID dest, PVOID src, ULONG64 size)
 	write_context->size = (ULONG64)size;
 
 	// CALL!
+	// TODO:这里应该要可以判断是否正确修改
 	KeGenericCallDpc(handler_writeToKernelWithDPC, write_context);
 
 	freeMapping(my_mdl, my_addr);
 	freeMemory(write_context);
+
+	return TRUE;
 }
 
 
@@ -313,8 +449,68 @@ UCHAR resume_code[] =
 ,0x5C                            // pop rsp     
 };
 
-static phook_record g_hook_record_head = NULL;
-static ULONG64 g_record_ct = 0;
+// TODO:这里好像可能有条件竞争？如果两个线程同时initialize，有可能出现两个都进入了!g_hook_resource，然后才初始化，就会被初始化两次。
+// 自动初始化资源的函数
+VOID EnsureInitializedResource()
+{
+	// 检查 g_hook_resource 是否为空并动态初始化
+	if (!g_hook_resource)
+	{
+		g_hook_resource = (ERESOURCE*)ExAllocatePoolWithTag(NonPagedPool, sizeof(ERESOURCE), 'RSRC');
+		if (g_hook_resource)
+		{
+			ExInitializeResourceLite(g_hook_resource);
+		}
+		else
+		{
+			LOG_FATAL("g_hook_resource initialization failed.\r\n");
+		}
+	}
+
+	// 初始化全局链表头
+	if (!g_hook_record_head)
+	{
+		g_hook_record_head = allocateMemory(PAGE_SIZE);
+		if (g_hook_record_head != NULL)
+		{
+			InitializeListHead(&g_hook_record_head->entry);
+		}
+		else
+		{
+			LOG_FATAL("g_hook_record_head initialization failed.\r\n");
+		}
+	}
+}
+
+// 这里也是一样的问题
+// 自动释放资源的函数
+VOID EnsureResourceDestroyed()
+{
+	// 这个函数里面不能再用freememory。
+	if (g_hook_record_head && IsListEmpty(&g_hook_record_head->entry))
+	{
+		// 删除资源对象
+		if (g_hook_resource)
+		{
+			ExDeleteResourceLite(g_hook_resource);
+			ExFreePoolWithTag(g_hook_resource, 'RSRC');
+			g_hook_resource = NULL;
+		}
+
+		// 销毁链表头
+		if (IsListEmpty(&g_hook_record_head->entry))
+		{
+			//freeMemory(g_hook_record_head);
+			ExFreePoolWithTag(g_hook_record_head, SMALLZHONG_NORMAL_POOLTAG);
+			g_hook_record_head = NULL;
+		}
+		else
+		{
+			LOG_ERROR("list inserted by other thread, making it a racing condition.\r\n");
+		}
+	}
+}
+
 
 VOID
 my_AppendTailList(
@@ -364,7 +560,7 @@ ULONG64 get_module_base_by_an_addr_in_this_module(ULONG64 virt_addr)
 		return NULL;
 	}
 
-	for (int i = 0; i < pSysInfo->NumberOfModules; i++)
+	for (ULONG i = 0; i < pSysInfo->NumberOfModules; i++)
 	{
 		PRTL_PROCESS_MODULE_INFORMATION pModuleInfo = &pSysInfo->Modules[i];
 		if (MmIsAddressValid(pModuleInfo) && pModuleInfo != NULL)
@@ -482,7 +678,7 @@ PCHAR get_blank_space_in_module(PCHAR virt_addr_in_this_module, ULONG64 size_nee
 //	for (int i = 0; i < pNts->FileHeader.NumberOfSections; i++)
 //	{
 //		char bufName[9] = { 0 };
-//		RtlMoveMemory(bufName, pSection->Name, 8);
+//		My_RtlMoveMemory(bufName, pSection->Name, 8);
 //
 //		// TODO:这个函数不安全。
 //		if (_stricmp(bufName, ".text") == 0)
@@ -541,15 +737,23 @@ PCHAR get_blank_space_in_module(PCHAR virt_addr_in_this_module, ULONG64 size_nee
 
 NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* record_number)
 {
+	if (!kernel_hook_initialized())
+	{
+		LOG_FATAL("kernel hook not initialized! please initialize before hooking!\r\n");
+		return STATUS_INTERNAL_ERROR;
+	}
 	if (!funcAddr || !MmIsAddressValid(funcAddr))
 	{
 		return STATUS_NOT_FOUND;
 	}
 
+	// 确保资源被初始化
+	EnsureInitializedResource();
+
 	ULONG64 handler_addr = allocateMemory(PAGE_SIZE);
 	if (!handler_addr)
 		return STATUS_MEMORY_NOT_ALLOCATED;
-	RtlMoveMemory(handler_addr, handler_shellcode, sizeof(handler_shellcode));
+	My_RtlMoveMemory(handler_addr, handler_shellcode, sizeof(handler_shellcode));
 	char bufcode[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, };
 
@@ -567,8 +771,8 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 	原始代码
 	ff 25 xxxxxx(跳回原来)
 	*/
-	RtlMoveMemory(shellcode_origin_addr, resume_code, sizeof(resume_code));
-	RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code), funcAddr, inslen);
+	My_RtlMoveMemory(shellcode_origin_addr, resume_code, sizeof(resume_code));
+	My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code), funcAddr, inslen);
 
 	// 使用zydis找出使用了相对地址的语句
 	ZyanU64 runtime_address = funcAddr;
@@ -609,7 +813,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 				}
 				UCHAR t_ebjmp[2] = { 0xeb, 0x00 };
 				// ABC后面再加上一个ebjmp，用来跳过用来resolve的代码
-				RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, t_ebjmp, sizeof(t_ebjmp));
+				My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, t_ebjmp, sizeof(t_ebjmp));
 				// 用来resolve的代码的长度+=2
 				resolve_relative_code_len += sizeof(t_ebjmp);
 			}
@@ -639,7 +843,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 				jmp_to_mov[1] = offset;
 
 				// 在lea指令位置放置跳转
-				RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + cur_disasm_offset, jmp_to_mov, sizeof(jmp_to_mov));
+				My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + cur_disasm_offset, jmp_to_mov, sizeof(jmp_to_mov));
 
 				// 3. 在shellcode末尾添加mov rax, imm64指令和跳回指令
 				// mov rax, imm64指令
@@ -653,7 +857,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 				ULONG64 mov_rax_location = shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len;
 
 				// 将mov rax指令添加到后面
-				RtlMoveMemory(mov_rax_location, mov_rax_imm64, sizeof(mov_rax_imm64));
+				My_RtlMoveMemory(mov_rax_location, mov_rax_imm64, sizeof(mov_rax_imm64));
 
 				// 计算跳回偏移：从jmp_back的下一个字节到lea指令后的下一条指令
 				// 目标 = shellcode_origin_addr + sizeof(resume_code) + cur_disasm_offset + instruction.info.length
@@ -667,7 +871,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 				jmp_back[1] = back_offset;
 
 				// 添加跳回指令
-				RtlMoveMemory(mov_rax_location + sizeof(mov_rax_imm64), jmp_back, sizeof(jmp_back));
+				My_RtlMoveMemory(mov_rax_location + sizeof(mov_rax_imm64), jmp_back, sizeof(jmp_back));
 
 				// 更新resolve_relative_code_len
 				resolve_relative_code_len += sizeof(mov_rax_imm64) + sizeof(jmp_back);
@@ -709,7 +913,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 					ULONG64 t_ff25jmp_addr = shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len;
 
 					*(PULONG64)&bufcode[6] = original_jx_addr;
-					RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
+					My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
 					resolve_relative_code_len += sizeof(bufcode); // resolve的代码长度+=sizeof bufcode
 
 					// 3.修正jcc跳转的地址，保证其能够正确跳转到刚才构造的ff25jmp处
@@ -771,7 +975,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 					ULONG64 t_ff25jmp_addr = shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len;
 
 					*(PULONG64)&bufcode[6] = original_jx_addr;
-					RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
+					My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
 					resolve_relative_code_len += sizeof(bufcode); // resolve的代码长度+=sizeof bufcode
 
 					// 3.修正jcc跳转的地址，保证其能够正确跳转到刚才构造的ff25jmp处
@@ -814,7 +1018,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 					ULONG64 t_ff25jmp_addr = shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len;
 
 					*(PULONG64)&bufcode[6] = original_jx_addr;
-					RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
+					My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
 					resolve_relative_code_len += sizeof(bufcode); // resolve的代码长度+=sizeof bufcode
 
 					// 3.修正jcc跳转的地址，保证其能够正确跳转到刚才构造的ff25jmp处
@@ -857,7 +1061,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 					ULONG64 t_ff25jmp_addr = shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len;
 
 					*(PULONG64)&bufcode[6] = original_jx_addr;
-					RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
+					My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
 					resolve_relative_code_len += sizeof(bufcode); // resolve的代码长度+=sizeof bufcode
 
 					// 3.修正jcc跳转的地址，保证其能够正确跳转到刚才构造的ff25jmp处
@@ -896,7 +1100,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 					return STATUS_NOT_FOUND;
 				}*/
 				// 1.在模块内部找一个能用来放当前代码+ff25jmp代码的地址
-				PUCHAR module_blank_area = get_blank_space_in_module(funcAddr, instruction.info.length + sizeof(bufcode));
+				PUCHAR module_blank_area = (PUCHAR)get_blank_space_in_module(funcAddr, instruction.info.length + sizeof(bufcode));
 				if (module_blank_area == NULL)
 				{
 					//DbgBreakPoint();
@@ -942,7 +1146,7 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 
 				// 6.shellcode的ff25，用来jmp到module_blank_area进行拥有四字节disp的代码的执行。
 				*(PULONG64)&bufcode[6] = module_blank_area;
-				RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
+				My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
 				resolve_relative_code_len += sizeof(bufcode); // resolve的代码长度+=sizeof bufcode
 
 				// 7.修改shellcode中的对应代码，变成eb xx跳到上一步放下的ff25shellcode。
@@ -985,21 +1189,30 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 	*(PCHAR)(shellcode_origin_addr + sizeof(resume_code) + inslen + 1) = *(PCHAR)(&t_dummy);
 	// 把ff25 jmp跳回原来地址的代码拷贝到ABC的后面
 	*(PULONG64)&bufcode[6] = funcAddr + inslen;
-	RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
+	My_RtlMoveMemory(shellcode_origin_addr + sizeof(resume_code) + inslen + resolve_relative_code_len, bufcode, sizeof(bufcode));
 
 	// 修改handler_shellcode+0x28，跳到HookHandler
 	// 修改handler_shellcode+0x43，跳到
 	*(PULONG64)(handler_addr + 37) = callbackFunc;
 	*(PULONG64)(handler_addr + 68) = shellcode_origin_addr;
 
-	if (!g_hook_record_head)
-	{
-		g_hook_record_head = allocateMemory(PAGE_SIZE);
-		InitializeListHead(&g_hook_record_head->entry);
-	}
+
+	// 使用资源锁保护链表的插入操作
+	ExAcquireResourceExclusiveLite(g_hook_resource, TRUE);
 
 	// 保存记录
 	phook_record record = allocateMemory(PAGE_SIZE);
+	if (!record)
+	{
+		LOG_ERROR("memory allocation failed!\r\n");
+		freeMemory(handler_addr);
+		freeMemory(shellcode_origin_addr);
+
+		// 在返回错误状态前释放锁
+		ExReleaseResourceLite(g_hook_resource);
+		*record_number = 0;
+		return STATUS_MEMORY_NOT_ALLOCATED;
+	}
 	record->num = g_record_ct;
 	*record_number = g_record_ct;
 	g_record_ct++;
@@ -1007,10 +1220,13 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 	record->len = inslen;
 	record->handler_addr = handler_addr;
 	record->shellcode_origin_addr = shellcode_origin_addr;
-	RtlMoveMemory(&record->buf, funcAddr, inslen);
+	My_RtlMoveMemory(&record->buf, funcAddr, inslen);
 	//InsertHeadList(&head->entry, &record->entry);
 	InitializeListHead(&record->entry);
 	my_AppendTailList(&g_hook_record_head->entry, &record->entry);
+
+	ExReleaseResourceLite(g_hook_resource);
+
 
 	// patch原函数
 	*(PULONG64)&bufcode[6] = handler_addr;
@@ -1021,6 +1237,38 @@ NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* recor
 
 ULONG64 KeFlushEntireTb();
 
+// 异步延迟释放内存的工作项回调函数
+VOID DelayFreeMemoryWorkItem(
+	_In_ PVOID IoObject,
+	_In_opt_ PVOID Context
+)
+{
+	UNREFERENCED_PARAMETER(IoObject);
+
+	// 获取工作项的上下文
+	PDELAY_FREE_CONTEXT delayContext = (PDELAY_FREE_CONTEXT)Context;
+	if (!delayContext || !delayContext->MemoryToFree) {
+		LOG_ERROR("the parameter of work item is null!\r\n");
+		InterlockedDecrement(&g_workitem_count); // 减少计数
+		return;  // 参数异常时直接返回
+	}
+
+	// 延迟释放，等待 1000 毫秒
+	LARGE_INTEGER delayInterval;
+	delayInterval.QuadPart = -(10000LL * 1000); // 1000 毫秒的负数，因为单位是 100ns
+	KeDelayExecutionThread(KernelMode, FALSE, &delayInterval);
+
+	// 执行内存释放
+	ExFreePoolWithTag(delayContext->MemoryToFree, delayContext->PoolTag);
+
+	// 释放上下文
+	ExFreePoolWithTag(delayContext, SMALLZHONG_WORKITEM_POOLTAG);
+
+	// 减少引用计数
+	InterlockedDecrement(&g_workitem_count);
+}
+
+// 可以多次调用，不会出问题。甚至record_head被抹了也不会出现问题。
 NTSTATUS reset_hook(ULONG64 record_number)
 {
 	if (!g_hook_record_head)
@@ -1035,6 +1283,7 @@ NTSTATUS reset_hook(ULONG64 record_number)
 
 		if (cur->num == record_number)
 		{
+			// 先写，再free，减少free了但是shellcode还在跑的概率。
 			writeToKernelWithDPC(cur->addr, &cur->buf, cur->len);
 			freeMemory(cur->handler_addr);
 			freeMemory(cur->shellcode_origin_addr);
@@ -1079,7 +1328,7 @@ NTSTATUS set_fast_prehandler(ULONG64 record_number, PUCHAR prehandler_buf, ULONG
 		return STATUS_NO_MEMORY;
 	}
 
-	phook_record cur = g_hook_record_head->entry.Flink;
+	phook_record cur = (phook_record)g_hook_record_head->entry.Flink;
 	BOOLEAN flag = FALSE;
 
 	while (cur != g_hook_record_head)
@@ -1089,7 +1338,7 @@ NTSTATUS set_fast_prehandler(ULONG64 record_number, PUCHAR prehandler_buf, ULONG
 			flag = TRUE;
 			PUCHAR prehook_buf_addr = (PUCHAR)(cur->handler_addr + 0x600);
 			// 先把prehandler拷贝到+0x600的位置
-			RtlMoveMemory(prehook_buf_addr, prehandler_buf, prehandler_buf_size);
+			My_RtlMoveMemory(prehook_buf_addr, prehandler_buf, prehandler_buf_size);
 			// 首先获取hook点的那个ff25跳转的地址，
 			PULONG64 phook_point_jmp_addr = (PULONG64)((ULONG64)cur->addr + 6);
 			ULONG64 hook_point_jmp_addr = *phook_point_jmp_addr;
@@ -1098,7 +1347,7 @@ NTSTATUS set_fast_prehandler(ULONG64 record_number, PUCHAR prehandler_buf, ULONG
 			*pPrehandlerJmpAddr = hook_point_jmp_addr;
 
 			// 最后把保存的字节拷贝到prehandler的最后
-			RtlMoveMemory(prehook_buf_addr + prehandler_buf_size, cur->buf, cur->len);
+			My_RtlMoveMemory(prehook_buf_addr + prehandler_buf_size, cur->buf, cur->len);
 			// 把ff25跳转回原函数的代码拷贝到最后的最后
 			UCHAR t_ff25_jmp_buf[] = {
 				0xff, 0x25, 0x00, 0x00, 0x00, 0x00, // jmp qword ptr ds : [7FF806EA0974] 
@@ -1113,22 +1362,35 @@ NTSTATUS set_fast_prehandler(ULONG64 record_number, PUCHAR prehandler_buf, ULONG
 			ULONG64 t_jmp_back_addr = cur->addr + cur->len;
 
 
-			RtlMoveMemory(t_ff25_jmp_buf + 6, &t_jmp_back_addr, sizeof(ULONG64));
-			RtlMoveMemory(prehook_buf_addr + prehandler_buf_size + cur->len, t_ff25_jmp_buf, sizeof t_ff25_jmp_buf);
+			My_RtlMoveMemory(t_ff25_jmp_buf + 6, &t_jmp_back_addr, sizeof(ULONG64));
+			My_RtlMoveMemory(prehook_buf_addr + prehandler_buf_size + cur->len, t_ff25_jmp_buf, sizeof t_ff25_jmp_buf);
 			// 通过原子操作对原始的hook点的ff25跳转的位置进行相应的修改，改为prehandler的地址
 			//InterlockedExchange64(phook_point_jmp_addr, prehook_buf_addr);
 			writeToKernel(phook_point_jmp_addr, &prehook_buf_addr, sizeof(PUCHAR));
 
 			break;
 		}
-		cur = cur->entry.Flink;
+		cur = (phook_record)cur->entry.Flink;
 	}
 
 	if (!flag) return STATUS_NOT_FOUND;
 	else return STATUS_SUCCESS;
 }
 
+VOID My_RtlZeroMemory(PVOID dest, SIZE_T _Size)
+{
+	if (!MmIsAddressValid(dest))
+	{
+		LOG_FATAL("address not valid!\r\n");
+		return;
+	}
+	PUCHAR d = (PUCHAR)dest;
 
+	while (_Size--)
+	{
+		*(d++) = 0;
+	}
+}
 
 
 

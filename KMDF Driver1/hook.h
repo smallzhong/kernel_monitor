@@ -194,7 +194,7 @@ typedef union _RFLAGS
 		unsigned ID : 1;
 		unsigned Reserved : 10;	//Always 0
 		unsigned Reserved_64:32;	//Always 0
-	};
+	} flag_bits;
 	ULONG64 full_flags;
 }RFLAGS;
 
@@ -226,7 +226,7 @@ typedef BOOLEAN(*PFN_GUEST_CALLBACK)(GuestContext*);
 
 typedef struct _hook_record
 {
-	LIST_ENTRY64 entry;
+	LIST_ENTRY entry;
 	ULONG64 num; // 记录编号
 	ULONG64 addr; // hook的地址
 	ULONG64 len; // 字节的大小
@@ -235,11 +235,20 @@ typedef struct _hook_record
 	UCHAR buf[1]; // 保存的字节
 } hook_record, * phook_record;
 
+typedef struct _DELAY_FREE_CONTEXT {
+	PVOID MemoryToFree;         // 待释放的内存地址
+	ULONG PoolTag;              // Pool Tag，用于释放内存时标记
+} DELAY_FREE_CONTEXT, * PDELAY_FREE_CONTEXT;
+
 
 EXTERN_C NTSTATUS hook_by_addr(ULONG64 funcAddr, ULONG64 callbackFunc, OUT ULONG64* record_number);
 EXTERN_C NTSTATUS reset_hook(ULONG64 record_number);
 EXTERN_C NTSTATUS set_fast_prehandler(ULONG64 record_number, PUCHAR prehandler_buf, ULONG64 prehandler_buf_size, ULONG64 jmp_addr_offset);
 EXTERN_C BOOLEAN writeToKernel(PVOID dest, PVOID src, ULONG64 size);
+EXTERN_C NTSTATUS kernel_hook_init(PDRIVER_OBJECT pdriver_object);
+EXTERN_C NTSTATUS kernel_hook_unload();
+EXTERN_C VOID My_RtlZeroMemory(PVOID dest, SIZE_T _Size);
 
 
-#define SMALLZHONG_POOLTAG 'SMZH'
+#define SMALLZHONG_NORMAL_POOLTAG 'SMZH'
+#define SMALLZHONG_WORKITEM_POOLTAG 'SMZ2'

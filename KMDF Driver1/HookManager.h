@@ -163,11 +163,24 @@ namespace smallzhong
 
 	private:
 		// 私有构造函数 (单例模式)
-		HookManager() = default;
+		HookManager()
+		{
+			LOG_WARN("HookManager is constructed(this is a singleton, if you see this message twice, there must be some error occured.)\r\n");
+		}
 
 		// 私有析构函数 (单例模式)
 		~HookManager() {
-			// 在这里，所有的 hook 都会通过 vector 的析构函数自动释放
+			NTSTATUS status = STATUS_SUCCESS;
+			status = kernel_hook_unload();
+			if (!NT_SUCCESS(status))
+			{
+				LOG_ERROR("kernel hook unload failed!\r\n");
+			}
+			else
+			{
+				LOG_INFO("kernel_hook_unload success.\r\n");
+			}
+			LOG_WARN("HookManager is destructed(this is a singleton, if you see this message twice, there must be some error occured.)\r\n");
 		}
 
 		std::vector<Hook> m_hooks;

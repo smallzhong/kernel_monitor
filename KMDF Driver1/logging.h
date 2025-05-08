@@ -1,14 +1,11 @@
 #pragma once
 
+#include <ntifs.h>
+#include <intrin.h>
+#include <ntdef.h>
+#include <ntimage.h>
 
-//#ifdef _DEBUG
-//#define LOG(fmt, ...) DbgPrintEx(77, 0, \
-//    "[smallzhong][%s():%u] " fmt "\n", __FUNCTION__, __LINE__, ## __VA_ARGS__)
-//#else
-//#define LOG(...)
-//#pragma warning(disable: 4101 4189) // unreferenced local variable
-//#endif
-
+// 日志级别定义
 #define LOG_LEVEL_NONE    0
 #define LOG_LEVEL_FATAL   1
 #define LOG_LEVEL_ERROR   2
@@ -17,52 +14,94 @@
 #define LOG_LEVEL_DEBUG   5
 #define LOG_LEVEL_TRACE   6
 
-#define CURRENT_LOG_LEVEL LOG_LEVEL_WARNING
+// 全局变量来动态设置日志级别，初始值可以为最高等级
+EXTERN_C ULONG g_LogLevel; // 默认为 LOG_LEVEL_TRACE，可以在运行时进行调整
 
-#if CURRENT_LOG_LEVEL >= LOG_LEVEL_FATAL
-#define LOG_FATAL(fmt, ...) do {DbgPrintEx(77, 0, "[smallzhong][%s():%u] " fmt , __FUNCTION__, __LINE__, ## __VA_ARGS__); DbgBreakPoint();} while (0)
-#define LOG_FATAL_NOPREFIX(fmt, ...) DbgPrintEx(77, 0, fmt, ## __VA_ARGS__)
-#else
-#define LOG_FATAL(fmt, ...)
-#define LOG_FATAL_NOPREFIX(fmt, ...)
-#endif
+// 判断当前日志级别是否允许记录
+#define LOG_IS_ENABLED(level) (g_LogLevel >= (level))
 
-#if CURRENT_LOG_LEVEL >= LOG_LEVEL_ERROR
-#define LOG_ERROR(fmt, ...) DbgPrintEx(77, 0, "[smallzhong][%s():%u] " fmt , __FUNCTION__, __LINE__, ## __VA_ARGS__)
-#define LOG_ERROR_NOPREFIX(fmt, ...) DbgPrintEx(77, 0, fmt, ## __VA_ARGS__)
-#else
-#define LOG_ERROR(fmt, ...)
-#define LOG_ERROR_NOPREFIX(fmt, ...)
-#endif
+// 日志宏定义
+#define LOG_FATAL(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_FATAL)) { \
+            DbgPrintEx(77, 0, "[F][%s():%u] " fmt, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+            DbgBreakPoint(); \
+        } \
+    } while (0)
 
-#if CURRENT_LOG_LEVEL >= LOG_LEVEL_WARNING
-#define LOG_WARN(fmt, ...) DbgPrintEx(77, 0, "[smallzhong][%s():%u] " fmt , __FUNCTION__, __LINE__, ## __VA_ARGS__)
-#define LOG_WARN_NOPREFIX(fmt, ...) DbgPrintEx(77, 0, fmt, ## __VA_ARGS__)
-#else
-#define LOG_WARN(fmt, ...)
-#define LOG_WARN_NOPREFIX(fmt, ...)
-#endif
+#define LOG_FATAL_NOPREFIX(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_FATAL)) { \
+            DbgPrintEx(77, 0, fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)
 
-#if CURRENT_LOG_LEVEL >= LOG_LEVEL_INFO
-#define LOG_INFO(fmt, ...) DbgPrintEx(77, 0, "[smallzhong][%s():%u] " fmt , __FUNCTION__, __LINE__, ## __VA_ARGS__)
-#define LOG_INFO_NOPREFIX(fmt, ...) DbgPrintEx(77, 0, fmt, ## __VA_ARGS__)
-#else
-#define LOG_INFO(fmt, ...)
-#define LOG_INFO_NOPREFIX(fmt, ...)
-#endif
+#define LOG_ERROR(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_ERROR)) { \
+            DbgPrintEx(77, 0, "[E][%s():%u] " fmt, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+        } \
+    } while (0)
 
-#if CURRENT_LOG_LEVEL >= LOG_LEVEL_DEBUG
-#define LOG_DEBUG(fmt, ...) DbgPrintEx(77, 0, "[smallzhong][%s():%u] " fmt , __FUNCTION__, __LINE__, ## __VA_ARGS__)
-#define LOG_DEBUG_NOPREFIX(fmt, ...) DbgPrintEx(77, 0, fmt, ## __VA_ARGS__)
-#else
-#define LOG_DEBUG(fmt, ...)
-#define LOG_DEBUG_NOPREFIX(fmt, ...)
-#endif
+#define LOG_ERROR_NOPREFIX(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_ERROR)) { \
+            DbgPrintEx(77, 0, fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)
 
-#if CURRENT_LOG_LEVEL >= LOG_LEVEL_TRACE
-#define LOG_TRACE(fmt, ...) DbgPrintEx(77, 0, "[smallzhong][%s():%u] " fmt , __FUNCTION__, __LINE__, ## __VA_ARGS__)
-#define LOG_TRACE_NOPREFIX(fmt, ...) DbgPrintEx(77, 0, fmt, ## __VA_ARGS__)
-#else
-#define LOG_TRACE(fmt, ...)
-#define LOG_TRACE_NOPREFIX(fmt, ...)
-#endif
+#define LOG_WARN(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_WARNING)) { \
+            DbgPrintEx(77, 0, "[W][%s():%u] " fmt, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+#define LOG_WARN_NOPREFIX(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_WARNING)) { \
+            DbgPrintEx(77, 0, fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+#define LOG_INFO(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_INFO)) { \
+            DbgPrintEx(77, 0, "[I][%s():%u] " fmt, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+#define LOG_INFO_NOPREFIX(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_INFO)) { \
+            DbgPrintEx(77, 0, fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+#define LOG_DEBUG(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_DEBUG)) { \
+            DbgPrintEx(77, 0, "[D][%s():%u] " fmt, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+#define LOG_DEBUG_NOPREFIX(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_DEBUG)) { \
+            DbgPrintEx(77, 0, fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+#define LOG_TRACE(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_TRACE)) { \
+            DbgPrintEx(77, 0, "[T][%s():%u] " fmt, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+        } \
+    } while (0)
+
+#define LOG_TRACE_NOPREFIX(fmt, ...) \
+    do { \
+        if (LOG_IS_ENABLED(LOG_LEVEL_TRACE)) { \
+            DbgPrintEx(77, 0, fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)

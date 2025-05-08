@@ -5,7 +5,6 @@
 
 namespace smallzhong
 {
-
 	// 检查函数是否在可用列表中
 	BOOLEAN IsFunctionAvailable(const char* funcName) {
 		uint32_t hash = RuntimeHash(funcName);
@@ -120,6 +119,7 @@ namespace smallzhong
 		reset();
 	}
 
+	// TODO:改成用throw传递信息。
 	// 安装 hook
 	BOOLEAN Hook::install() {
 		if (m_record_number.has_value()) {
@@ -168,7 +168,7 @@ namespace smallzhong
 		try {
 			m_hooks.emplace_back(funcAddr, callbackFunc);
 			hooked_funcs.insert(funcAddr);
-			return m_hooks.size() - 1;
+			return m_hooks.size() - 1;	
 		}
 		catch (const std::exception& e) {
 			// 捕获 Hook 构造函数可能抛出的异常

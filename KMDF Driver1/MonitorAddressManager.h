@@ -36,7 +36,7 @@ namespace smallzhong
 					POOL_TAG));
 
 			if (m_ranges != nullptr) {
-				RtlZeroMemory(m_ranges, sizeof(AddressRange) * m_capacity);
+				My_RtlZeroMemory(m_ranges, sizeof(AddressRange) * m_capacity);
 			}
 
 			// 初始化自旋锁
@@ -91,9 +91,7 @@ namespace smallzhong
 				m_ranges[m_count].is_deleted = FALSE;
 				m_count++;
 
-				KdPrintEx((DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
-					"增加了一个监控区域 %llu，%llx %llx\r\n",
-					m_count, start_addr, end_addr));
+				LOG_INFO("增加了一个监控区域 %llu，%llx %llx\r\n", m_count, start_addr, end_addr);
 			}
 
 			// 释放自旋锁，降低 IRQL

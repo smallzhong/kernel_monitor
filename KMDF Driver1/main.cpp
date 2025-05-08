@@ -5,6 +5,7 @@
 #include "HookManager.h"
 #include "handlers.h"
 #include "MonitorAddressManager.h"
+#include "logging.h"
 
 
 VOID ImageLoadCallback(
@@ -41,9 +42,16 @@ VOID DRIVERUNLOAD(_In_ struct _DRIVER_OBJECT* DriverObject)
 {
 	UNREFERENCED_PARAMETER(DriverObject);
 
-	PsRemoveLoadImageNotifyRoutine(ImageLoadCallback);
-	my_sleep(1000);
-	LOG_INFO("unload\r\n\r\n\r\n\r\n");
+	// TODO：debug
+	//g_LogLevel = LOG_LEVEL_DEBUG;
+
+	NTSTATUS status = STATUS_SUCCESS;
+
+	status = PsRemoveLoadImageNotifyRoutine(ImageLoadCallback);
+	if (!NT_SUCCESS(status))
+	{
+		LOG_ERROR("PsRemoveLoadImageNotifyRoutine failed!\r\n");
+	}
 }
 
 
@@ -51,12 +59,24 @@ EXTERN_C NTSTATUS DriverMain(const PDRIVER_OBJECT DriverObject, const PUNICODE_S
 {
 	UNREFERENCED_PARAMETER(Registry);
 
+	LOG_WARN("driver loaded %p %llx\r\n", DriverObject->DriverStart, (ULONG64)DriverObject->DriverStart + DriverObject->DriverSize);
+
 	LOG_INFO("entry\r\n");
 
 	NTSTATUS status = STATUS_SUCCESS;
+
+	// 初始化kernel_hook
+	status = kernel_hook_init(DriverObject);
+	if (!NT_SUCCESS(status))
+	{
+		LOG_ERROR("kerenl_hook_init failed!\r\n");
+		return status;
+	}
+
 	status = PsSetLoadImageNotifyRoutine(ImageLoadCallback);
 	if (!NT_SUCCESS(status))
 	{
+		LOG_ERROR("PsSetLoadImageNotifyRoutine failed\r\n");
 		return status;
 	}
 
@@ -81,6 +101,9 @@ EXTERN_C NTSTATUS DriverMain(const PDRIVER_OBJECT DriverObject, const PUNICODE_S
 			{
 				if (smallzhong::IsFunctionAvailable(func.function_name.c_str()))
 				{
+#if 1
+					if (0) {}
+#else 
 					if (func.function_name == "KdDisableDebugger")
 					{
 						auto lambda = [](GuestContext* context) -> BOOLEAN {
@@ -126,6 +149,7 @@ EXTERN_C NTSTATUS DriverMain(const PDRIVER_OBJECT DriverObject, const PUNICODE_S
 						}
 
 					}
+#endif 
 					else
 					{
 						// 查找对应的处理程序
@@ -137,7 +161,7 @@ EXTERN_C NTSTATUS DriverMain(const PDRIVER_OBJECT DriverObject, const PUNICODE_S
 								LOG_INFO("Successfully hooked %s at %llx\r\n", func.function_name.c_str(), func.address);
 							}
 							catch (const std::exception& e) {
-								LOG_INFO( "Failed to hook %s: %s\r\n", func.function_name.c_str(), e.what());
+								LOG_INFO("Failed to hook %s: %s\r\n", func.function_name.c_str(), e.what());
 							}
 						}
 					}

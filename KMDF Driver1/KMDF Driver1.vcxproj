@@ -32,6 +32,7 @@
     <ClCompile Include="handlers.cpp" />
     <ClCompile Include="HookManager.cpp" />
     <ClCompile Include="hook.c" />
+    <ClCompile Include="logging.c" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="search.cpp" />
     <ClCompile Include="Zydis.c" />
