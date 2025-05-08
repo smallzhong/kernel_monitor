@@ -2,6 +2,7 @@
 
 + 关于本框架的详细说明请见 [https://bbs.kanxue.com/thread-286641.htm](https://bbs.kanxue.com/thread-286641.htm)
 + 本项目使用了 [https://github.com/smallzhong/kernelhook](https://github.com/smallzhong/kernelhook) 这个内核 inlinehook 框架。
++ 本项目的设计初衷是在CTF比赛中提高分析驱动程序逻辑的效率，项目的开发和测试都是在虚拟机中进行的，没有考虑过过PG等在真机中运行会遇到的问题。如果您希望用来分析外挂等带有反虚拟机、反测试模式，必须在真机中运行的程序，请自行解决过PG等问题。
 
 ## 使用流程
 
